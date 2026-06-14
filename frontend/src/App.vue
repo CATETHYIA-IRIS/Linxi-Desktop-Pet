@@ -3,6 +3,7 @@ import { ref } from 'vue'
 
 type PetStatus = 'idle' | 'listening' | 'thinking' | 'recognizing' | 'speaking' | 'error'
 type ModelKey = 'pro' | 'lite' | 'mini'
+type TtsMode = 'whole' | 'sentence'
 
 const status = ref<PetStatus>('idle')
 const volume = ref(0)
@@ -13,7 +14,7 @@ const backendMessage = ref('暂无后端消息')
 const pcmChunkCount = ref(0)
 
 const userText = ref('')
-const aiReply = ref('你好，我是林曦。现在我能听、能想、能说，也开始学习实时字幕了。')
+const aiReply = ref('你好，我是林曦。现在我能听、能想、能说，也开始学习更自然地分句说话了。')
 const isChatLoading = ref(false)
 
 const asrText = ref('暂无语音识别结果')
@@ -24,6 +25,9 @@ const isAsrLoading = ref(false)
 const isTtsLoading = ref(false)
 const ttsMessage = ref('暂无语音播放')
 const autoSpeakEnabled = ref(true)
+const ttsMode = ref<TtsMode>('sentence')
+const ttsSegmentIndex = ref(0)
+const ttsSegmentTotal = ref(0)
 
 const selectedModel = ref<ModelKey>('lite')
 
@@ -179,6 +183,124 @@ async function sendChat(textFromVoice?: string, shouldSpeak = true) {
   }
 }
 
+function splitTextIntoSentences(text: string): string[] {
+  const cleanText = text
+    .replace(/\r/g, '')
+    .replace(/\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!cleanText) return []
+
+  const matched = cleanText.match(/[^。！？!?；;\n]+[。！？!?；;]?/g) || [cleanText]
+  const result: string[] = []
+
+  for (const item of matched) {
+    const sentence = item.trim()
+    if (!sentence) continue
+
+    if (sentence.length <= 90) {
+      result.push(sentence)
+      continue
+    }
+
+    for (let i = 0; i < sentence.length; i += 90) {
+      result.push(sentence.slice(i, i + 90))
+    }
+  }
+
+  return result
+}
+
+async function requestTtsAudio(content: string): Promise<string> {
+  const response = await fetch('http://127.0.0.1:8000/tts/speak', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      text: content
+    })
+  })
+
+  const data = await response.json()
+
+  if (!data.ok) {
+    throw new Error(data.message || 'TTS 合成失败。')
+  }
+
+  return `http://127.0.0.1:8000${data.audio_url}`
+}
+
+async function playAudioUrl(audioUrl: string): Promise<void> {
+  if (currentAudio) {
+    currentAudio.pause()
+    currentAudio = null
+  }
+
+  currentAudio = new Audio(audioUrl)
+
+  await new Promise<void>((resolve, reject) => {
+    if (!currentAudio) {
+      reject(new Error('音频对象创建失败。'))
+      return
+    }
+
+    currentAudio.onplay = () => {
+      status.value = 'speaking'
+    }
+
+    currentAudio.onended = () => {
+      resolve()
+    }
+
+    currentAudio.onerror = () => {
+      reject(new Error('浏览器播放音频失败。'))
+    }
+
+    currentAudio.play().catch(reject)
+  })
+}
+
+async function speakWholeText(content: string) {
+  ttsSegmentIndex.value = 1
+  ttsSegmentTotal.value = 1
+  ttsMessage.value = '整段语音合成中...'
+  message.value = '林曦正在合成整段语音...'
+
+  const audioUrl = await requestTtsAudio(content)
+
+  ttsMessage.value = '整段语音播放中...'
+  message.value = '林曦正在说话...'
+
+  await playAudioUrl(audioUrl)
+}
+
+async function speakSentenceQueue(content: string) {
+  const sentences = splitTextIntoSentences(content)
+
+  if (sentences.length === 0) {
+    throw new Error('没有可播放的句子。')
+  }
+
+  ttsSegmentTotal.value = sentences.length
+
+  for (let i = 0; i < sentences.length; i++) {
+    const sentence = sentences[i]
+    ttsSegmentIndex.value = i + 1
+
+    ttsMessage.value = `第 ${i + 1}/${sentences.length} 句合成中：${sentence}`
+    message.value = `林曦正在准备第 ${i + 1} 句...`
+
+    const audioUrl = await requestTtsAudio(sentence)
+
+    ttsMessage.value = `第 ${i + 1}/${sentences.length} 句播放中：${sentence}`
+    message.value = `林曦正在说第 ${i + 1} 句...`
+
+    await playAudioUrl(audioUrl)
+  }
+}
+
 async function speakText(text?: string) {
   const content = (text ?? aiReply.value).trim()
 
@@ -190,61 +312,26 @@ async function speakText(text?: string) {
   try {
     isTtsLoading.value = true
     status.value = 'speaking'
-    message.value = '林曦正在合成语音...'
-    ttsMessage.value = '语音合成中...'
 
-    const response = await fetch('http://127.0.0.1:8000/tts/speak', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        text: content
-      })
-    })
-
-    const data = await response.json()
-
-    if (!data.ok) {
-      ttsMessage.value = data.message || 'TTS 合成失败。'
-      message.value = '林曦语音合成失败'
-      return
+    if (ttsMode.value === 'sentence') {
+      await speakSentenceQueue(content)
+    } else {
+      await speakWholeText(content)
     }
 
-    const audioUrl = `http://127.0.0.1:8000${data.audio_url}`
-
-    if (currentAudio) {
-      currentAudio.pause()
-      currentAudio = null
-    }
-
-    currentAudio = new Audio(audioUrl)
-
-    currentAudio.onplay = () => {
-      message.value = '林曦正在说话...'
-      ttsMessage.value = '正在播放林曦语音'
-      status.value = 'speaking'
-    }
-
-    currentAudio.onended = () => {
-      message.value = '林曦说完了'
-      ttsMessage.value = '语音播放完成'
-      status.value = 'idle'
-    }
-
-    currentAudio.onerror = () => {
-      ttsMessage.value = '浏览器播放音频失败。'
-      message.value = '语音播放失败'
-      status.value = 'idle'
-    }
-
-    await currentAudio.play()
+    message.value = '林曦说完了'
+    ttsMessage.value = ttsMode.value === 'sentence'
+      ? `分句播放完成，共 ${ttsSegmentTotal.value} 句`
+      : '整段播放完成'
   } catch (error) {
     console.error(error)
-    ttsMessage.value = 'TTS 请求失败，或者浏览器拦截了自动播放。可以再点一次“播放林曦回复”。'
+    ttsMessage.value = error instanceof Error
+      ? error.message
+      : 'TTS 请求失败，或者浏览器拦截了自动播放。可以再点一次“播放林曦回复”。'
     message.value = '语音播放失败'
   } finally {
     isTtsLoading.value = false
+    status.value = 'idle'
   }
 }
 
@@ -505,6 +592,18 @@ function stopListening() {
           林曦回复后自动开口说话
         </label>
 
+        <div class="tts-mode-row">
+          <span>语音播放模式：</span>
+          <label>
+            <input v-model="ttsMode" type="radio" value="sentence" />
+            分句队列播放
+          </label>
+          <label>
+            <input v-model="ttsMode" type="radio" value="whole" />
+            整段播放
+          </label>
+        </div>
+
         <div class="chat-actions">
           <button class="send-button" @click="sendChat()" :disabled="isChatLoading || isTtsLoading">
             {{ isChatLoading ? '思考中...' : '发送给林曦' }}
@@ -522,6 +621,9 @@ function stopListening() {
 
         <div class="tts-box">
           <div class="reply-title">TTS 状态</div>
+          <div class="stream-status">
+            当前进度：{{ ttsSegmentIndex }} / {{ ttsSegmentTotal }}
+          </div>
           <div class="reply-text">{{ ttsMessage }}</div>
         </div>
       </div>
@@ -725,13 +827,18 @@ function stopListening() {
   color: rgba(255, 255, 255, 0.55);
 }
 
-.toggle-line {
+.toggle-line,
+.tts-mode-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   margin-top: 12px;
   font-size: 14px;
   opacity: 0.9;
+}
+
+.tts-mode-row {
+  flex-wrap: wrap;
 }
 
 .chat-actions {
@@ -762,6 +869,10 @@ function stopListening() {
 
 .stream-asr-box {
   border: 1px solid rgba(45, 212, 191, 0.35);
+}
+
+.tts-box {
+  border: 1px solid rgba(244, 114, 182, 0.35);
 }
 
 .reply-title {
