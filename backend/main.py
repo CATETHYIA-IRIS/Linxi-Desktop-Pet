@@ -6,11 +6,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 from doubao_asr import recognize_wav_file
 from doubao_tts import synthesize_text_to_audio_file
-import os
+from doubao_stream_asr import DoubaoStreamASR
+from linxi_llm import AVAILABLE_MODELS, chat_with_linxi
+import json
 import wave
 import uuid
 import uvicorn
-import requests
 
 BACKEND_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BACKEND_DIR.parent
@@ -36,24 +37,6 @@ WAV_FILE_PATH = AUDIO_DIR / "test.wav"
 PCM_SAMPLE_RATE = 16000
 PCM_CHANNELS = 1
 PCM_SAMPLE_WIDTH = 2
-
-AVAILABLE_MODELS = {
-    "pro": {
-        "id": "doubao-seed-2-0-pro-260215",
-        "name": "Pro",
-        "desc": "最强效果，适合最终展示"
-    },
-    "lite": {
-        "id": "doubao-seed-2-0-lite-260428",
-        "name": "Lite",
-        "desc": "日常开发推荐，速度和效果均衡"
-    },
-    "mini": {
-        "id": "doubao-seed-2-0-mini-260428",
-        "name": "Mini",
-        "desc": "最快最省，适合测试"
-    }
-}
 
 
 class ChatRequest(BaseModel):
@@ -88,99 +71,17 @@ def save_wav_from_pcm(pcm_chunks: list[bytes], output_path: Path):
         wav_file.writeframes(pcm_data)
 
 
-def extract_response_text(data: dict) -> str:
-    if data.get("output_text"):
-        return data["output_text"]
-
-    outputs = data.get("output", [])
-    texts = []
-
-    for item in outputs:
-        content_list = item.get("content", [])
-        for content in content_list:
-            if content.get("text"):
-                texts.append(content["text"])
-            elif content.get("value"):
-                texts.append(content["value"])
-
-    if texts:
-        return "\n".join(texts)
-
-    return f"林曦没有拿到有效回复，原始返回：{data}"
-
-
 @app.post("/chat")
 def chat(req: ChatRequest):
-    api_key = os.getenv("ARK_API_KEY")
-    base_url = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-
-    model_key = req.model
-    if model_key not in AVAILABLE_MODELS:
-        model_key = "lite"
-
-    model_id = AVAILABLE_MODELS[model_key]["id"]
-
-    if not api_key:
-        return {
-            "ok": False,
-            "reply": "没有读取到 ARK_API_KEY，请检查项目根目录的 .env 文件。",
-            "model": model_id
-        }
-
-    url = f"{base_url}/responses"
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-    system_prompt = (
-        "你叫林曦，是一个运行在用户电脑桌面上的 AI 桌宠。"
-        "你的语气自然、简短、亲切，不要像客服，不要长篇大论。"
-        "你现在处于早期原型阶段，已经具备文字聊天和语音识别能力，后续会接入音色克隆、记忆海、数据海和桌面形象。"
-        "回答时尽量像一个真实桌宠角色，而不是普通助手。"
-    )
-
-    payload = {
-        "model": model_id,
-        "input": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": f"{system_prompt}\n\n用户说：{req.text}\n\n请以林曦的身份回复："
-                    }
-                ]
-            }
-        ]
-    }
-
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
-
-        data = response.json()
-        reply = extract_response_text(data)
-
-        return {
-            "ok": True,
-            "reply": reply,
-            "model": model_id,
-            "model_key": model_key
-        }
-
-    except requests.exceptions.HTTPError as e:
-        return {
-            "ok": False,
-            "reply": f"LLM HTTP 请求失败：{str(e)}。请检查 API Key、模型 ID 和接口地址。",
-            "model": model_id
-        }
+        result = chat_with_linxi(req.text, req.model)
+        return result
     except Exception as e:
         return {
             "ok": False,
             "reply": f"LLM 调用异常：{str(e)}",
-            "model": model_id
+            "model": "",
+            "model_key": req.model
         }
 
 
@@ -251,6 +152,23 @@ async def websocket_endpoint(websocket: WebSocket):
 
     pcm_chunks: list[bytes] = []
     pcm_chunk_count = 0
+    stream_asr: DoubaoStreamASR | None = None
+
+    async def send_json_to_frontend(data: dict):
+        await websocket.send_text(json.dumps(data, ensure_ascii=False))
+
+    async def on_stream_asr_text(text: str, is_final: bool, raw: dict):
+        if text:
+            await send_json_to_frontend({
+                "type": "asr_stream",
+                "text": text,
+                "is_final": is_final
+            })
+        elif raw.get("error") or raw.get("server_error"):
+            await send_json_to_frontend({
+                "type": "asr_stream_error",
+                "message": str(raw)
+            })
 
     try:
         while True:
@@ -263,13 +181,39 @@ async def websocket_endpoint(websocket: WebSocket):
                 if text == "START_PCM":
                     pcm_chunks = []
                     pcm_chunk_count = 0
+
                     print("开始接收 PCM 音频流")
                     await websocket.send_text("后端开始接收 PCM 音频流")
+
+                    try:
+                        stream_asr = DoubaoStreamASR()
+                        await stream_asr.start(on_stream_asr_text)
+                        await send_json_to_frontend({
+                            "type": "asr_stream_status",
+                            "message": "流式 ASR 已连接，开始实时字幕"
+                        })
+                    except Exception as e:
+                        stream_asr = None
+                        await send_json_to_frontend({
+                            "type": "asr_stream_error",
+                            "message": f"流式 ASR 启动失败：{str(e)}。录音识别仍可继续使用。"
+                        })
 
                 elif text == "STOP_PCM":
                     save_wav_from_pcm(pcm_chunks, WAV_FILE_PATH)
                     print("PCM 已保存为 WAV：", WAV_FILE_PATH)
                     await websocket.send_text(f"PCM 已保存为 WAV：{WAV_FILE_PATH}")
+
+                    if stream_asr:
+                        try:
+                            await stream_asr.finish()
+                        except Exception as e:
+                            await send_json_to_frontend({
+                                "type": "asr_stream_error",
+                                "message": f"流式 ASR 结束失败：{str(e)}"
+                            })
+                        finally:
+                            stream_asr = None
 
                 else:
                     await websocket.send_text(f"后端收到文本：{text}")
@@ -278,6 +222,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 pcm_data = message["bytes"]
                 pcm_chunks.append(pcm_data)
                 pcm_chunk_count += 1
+
+                if stream_asr:
+                    try:
+                        await stream_asr.send_audio(pcm_data)
+                    except Exception as e:
+                        await send_json_to_frontend({
+                            "type": "asr_stream_error",
+                            "message": f"发送音频到流式 ASR 失败：{str(e)}"
+                        })
+                        try:
+                            await stream_asr.close()
+                        except Exception:
+                            pass
+                        stream_asr = None
 
                 print(
                     f"收到 PCM 音频片段：第 {pcm_chunk_count} 段，"
@@ -291,6 +249,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except Exception as e:
         print("前端连接已断开：", e)
+
+        if stream_asr:
+            try:
+                await stream_asr.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

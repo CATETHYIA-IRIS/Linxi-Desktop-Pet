@@ -13,10 +13,12 @@ const backendMessage = ref('暂无后端消息')
 const pcmChunkCount = ref(0)
 
 const userText = ref('')
-const aiReply = ref('你好，我是林曦。现在我不仅能识别你说的话，也准备开口说话了。')
+const aiReply = ref('你好，我是林曦。现在我能听、能想、能说，也开始学习实时字幕了。')
 const isChatLoading = ref(false)
 
 const asrText = ref('暂无语音识别结果')
+const streamAsrText = ref('暂无实时字幕')
+const streamAsrStatus = ref('流式 ASR 未连接')
 const isAsrLoading = ref(false)
 
 const isTtsLoading = ref(false)
@@ -62,6 +64,40 @@ function selectModel(model: ModelKey) {
   selectedModel.value = model
 }
 
+function handleBackendMessage(rawMessage: string) {
+  try {
+    const data = JSON.parse(rawMessage)
+
+    if (data.type === 'asr_stream') {
+      streamAsrText.value = data.text || ''
+      streamAsrStatus.value = data.is_final ? '流式 ASR 已返回最终结果' : '流式 ASR 正在识别...'
+
+      if (data.text) {
+        asrText.value = data.text
+        userText.value = data.text
+      }
+
+      return
+    }
+
+    if (data.type === 'asr_stream_status') {
+      streamAsrStatus.value = data.message || '流式 ASR 状态更新'
+      backendMessage.value = data.message || backendMessage.value
+      return
+    }
+
+    if (data.type === 'asr_stream_error') {
+      streamAsrStatus.value = data.message || '流式 ASR 出错'
+      backendMessage.value = data.message || backendMessage.value
+      return
+    }
+  } catch {
+    // 普通后端文本消息，走下面的默认显示
+  }
+
+  backendMessage.value = rawMessage
+}
+
 function connectBackend() {
   if (socket && socket.readyState === WebSocket.OPEN) {
     backendStatus.value = '后端已经连接'
@@ -77,7 +113,7 @@ function connectBackend() {
   }
 
   socket.onmessage = (event) => {
-    backendMessage.value = event.data
+    handleBackendMessage(event.data)
   }
 
   socket.onerror = () => {
@@ -268,6 +304,8 @@ async function startListening() {
     message.value = '林曦正在听你说话...'
     pcmChunkCount.value = 0
     asrText.value = '录音中，结束后可以点击“识别刚才录音”或“一键语音问林曦”'
+    streamAsrText.value = '等待实时字幕...'
+    streamAsrStatus.value = '正在连接流式 ASR...'
 
     socket.send('START_PCM')
 
@@ -517,6 +555,12 @@ function stopListening() {
           </button>
         </div>
 
+        <div class="stream-asr-box">
+          <div class="reply-title">实时字幕</div>
+          <div class="stream-status">{{ streamAsrStatus }}</div>
+          <div class="reply-text">{{ streamAsrText }}</div>
+        </div>
+
         <div class="asr-box">
           <div class="reply-title">ASR 识别结果</div>
           <div class="reply-text">{{ asrText }}</div>
@@ -707,7 +751,8 @@ function stopListening() {
 
 .reply-box,
 .asr-box,
-.tts-box {
+.tts-box,
+.stream-asr-box {
   margin-top: 14px;
   padding: 14px;
   border-radius: 14px;
@@ -715,8 +760,18 @@ function stopListening() {
   background: rgba(255, 255, 255, 0.12);
 }
 
+.stream-asr-box {
+  border: 1px solid rgba(45, 212, 191, 0.35);
+}
+
 .reply-title {
   font-weight: bold;
+  margin-bottom: 8px;
+}
+
+.stream-status {
+  font-size: 13px;
+  opacity: 0.75;
   margin-bottom: 8px;
 }
 
