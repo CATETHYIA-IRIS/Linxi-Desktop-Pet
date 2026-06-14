@@ -46,6 +46,7 @@ class ChatRequest(BaseModel):
 
 class TtsRequest(BaseModel):
     text: str
+    speaker: str | None = None
 
 
 @app.get("/")
@@ -130,7 +131,7 @@ def speak_text(req: TtsRequest):
     output_path = AUDIO_DIR / f"linxi_reply_{uuid.uuid4().hex}.mp3"
 
     try:
-        synthesize_text_to_audio_file(text, output_path)
+        synthesize_text_to_audio_file(text, output_path, req.speaker)
 
         return {
             "ok": True,

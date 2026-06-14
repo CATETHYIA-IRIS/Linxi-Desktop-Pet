@@ -4,6 +4,7 @@ import { ref } from 'vue'
 type PetStatus = 'idle' | 'listening' | 'thinking' | 'recognizing' | 'speaking' | 'error'
 type ModelKey = 'pro' | 'lite' | 'mini'
 type TtsMode = 'whole' | 'sentence'
+type SpeakerKey = 'default' | 'S_DDV1VAL22' | 'S_p4f3VAL22'
 
 const status = ref<PetStatus>('idle')
 const volume = ref(0)
@@ -30,6 +31,28 @@ const ttsSegmentIndex = ref(0)
 const ttsSegmentTotal = ref(0)
 
 const selectedModel = ref<ModelKey>('lite')
+const selectedSpeaker = ref<SpeakerKey>('default')
+
+const speakerCards = [
+  {
+    key: 'default' as SpeakerKey,
+    name: '默认音色',
+    id: '',
+    desc: '豆包内置女声'
+  },
+  {
+    key: 'S_DDV1VAL22' as SpeakerKey,
+    name: '音色 1',
+    id: 'S_DDV1VAL22',
+    desc: '自定义克隆音色'
+  },
+  {
+    key: 'S_p4f3VAL22' as SpeakerKey,
+    name: '音色 2',
+    id: 'S_p4f3VAL22',
+    desc: '自定义克隆音色'
+  }
+]
 
 const modelCards = [
   {
@@ -66,6 +89,10 @@ let currentAudio: HTMLAudioElement | null = null
 
 function selectModel(model: ModelKey) {
   selectedModel.value = model
+}
+
+function selectSpeaker(speaker: SpeakerKey) {
+  selectedSpeaker.value = speaker
 }
 
 function handleBackendMessage(rawMessage: string) {
@@ -213,13 +240,16 @@ function splitTextIntoSentences(text: string): string[] {
 }
 
 async function requestTtsAudio(content: string): Promise<string> {
+  const speakerId = speakerCards.find(s => s.key === selectedSpeaker.value)?.id || undefined
+
   const response = await fetch('http://127.0.0.1:8000/tts/speak', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      text: content
+      text: content,
+      speaker: speakerId
     })
   })
 
@@ -578,6 +608,24 @@ function stopListening() {
         </div>
       </div>
 
+      <div class="speaker-box">
+        <div class="section-title">选择音色</div>
+
+        <div class="model-cards">
+          <button
+            v-for="item in speakerCards"
+            :key="item.key"
+            class="model-card speaker-card"
+            :class="{ active: selectedSpeaker === item.key }"
+            @click="selectSpeaker(item.key)"
+          >
+            <div class="model-name">{{ item.name }}</div>
+            <div class="model-id">{{ item.id || '默认' }}</div>
+            <div class="model-desc">{{ item.desc }}</div>
+          </button>
+        </div>
+      </div>
+
       <div class="chat-box">
         <div class="section-title">文字对话测试</div>
 
@@ -763,6 +811,7 @@ function stopListening() {
 }
 
 .model-box,
+.speaker-box,
 .chat-box,
 .voice-box,
 .volume-box {
@@ -968,5 +1017,11 @@ button:disabled {
 .backend-title {
   font-weight: bold;
   margin-bottom: 4px;
+}
+
+.speaker-card.active {
+  border-color: #a78bfa;
+  background: rgba(167, 139, 250, 0.18);
+  box-shadow: 0 0 20px rgba(167, 139, 250, 0.35);
 }
 </style>
