@@ -4,5 +4,6 @@ backend/__pycache__/
 backend/audio/*.wav
 backend/audio/*.webm
 backend/audio/*.pcm
+backend/audio/*.mp3
 .env
 *.log

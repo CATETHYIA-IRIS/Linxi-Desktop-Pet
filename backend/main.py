@@ -1,11 +1,14 @@
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 from dotenv import load_dotenv
 from doubao_asr import recognize_wav_file
+from doubao_tts import synthesize_text_to_audio_file
 import os
 import wave
+import uuid
 import uvicorn
 import requests
 
@@ -25,6 +28,8 @@ app.add_middleware(
 
 AUDIO_DIR = BACKEND_DIR / "audio"
 AUDIO_DIR.mkdir(exist_ok=True)
+
+app.mount("/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio")
 
 WAV_FILE_PATH = AUDIO_DIR / "test.wav"
 
@@ -54,6 +59,10 @@ AVAILABLE_MODELS = {
 class ChatRequest(BaseModel):
     text: str
     model: str = "lite"
+
+
+class TtsRequest(BaseModel):
+    text: str
 
 
 @app.get("/")
@@ -128,7 +137,7 @@ def chat(req: ChatRequest):
     system_prompt = (
         "你叫林曦，是一个运行在用户电脑桌面上的 AI 桌宠。"
         "你的语气自然、简短、亲切，不要像客服，不要长篇大论。"
-        "你现在处于早期原型阶段，已经具备文字聊天能力，后续会接入语音、音色克隆、记忆海、数据海和桌面形象。"
+        "你现在处于早期原型阶段，已经具备文字聊天和语音识别能力，后续会接入音色克隆、记忆海、数据海和桌面形象。"
         "回答时尽量像一个真实桌宠角色，而不是普通助手。"
     )
 
@@ -203,6 +212,35 @@ def recognize_last_audio():
             "ok": False,
             "text": "",
             "message": f"ASR 识别失败：{str(e)}"
+        }
+
+
+@app.post("/tts/speak")
+def speak_text(req: TtsRequest):
+    text = req.text.strip()
+
+    if not text:
+        return {
+            "ok": False,
+            "audio_url": "",
+            "message": "TTS 文本为空，无法合成语音。"
+        }
+
+    output_path = AUDIO_DIR / f"linxi_reply_{uuid.uuid4().hex}.mp3"
+
+    try:
+        synthesize_text_to_audio_file(text, output_path)
+
+        return {
+            "ok": True,
+            "audio_url": f"/audio/{output_path.name}",
+            "message": "TTS 合成完成"
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "audio_url": "",
+            "message": f"TTS 合成失败：{str(e)}"
         }
 
 

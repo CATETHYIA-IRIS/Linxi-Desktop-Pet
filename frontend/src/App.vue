@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
-type PetStatus = 'idle' | 'listening' | 'thinking' | 'recognizing' | 'error'
+type PetStatus = 'idle' | 'listening' | 'thinking' | 'recognizing' | 'speaking' | 'error'
 type ModelKey = 'pro' | 'lite' | 'mini'
 
 const status = ref<PetStatus>('idle')
@@ -13,11 +13,15 @@ const backendMessage = ref('暂无后端消息')
 const pcmChunkCount = ref(0)
 
 const userText = ref('')
-const aiReply = ref('你好，我是林曦。你可以先用文字和我说话，也可以录一段语音让我识别。')
+const aiReply = ref('你好，我是林曦。现在我不仅能识别你说的话，也准备开口说话了。')
 const isChatLoading = ref(false)
 
 const asrText = ref('暂无语音识别结果')
 const isAsrLoading = ref(false)
+
+const isTtsLoading = ref(false)
+const ttsMessage = ref('暂无语音播放')
+const autoSpeakEnabled = ref(true)
 
 const selectedModel = ref<ModelKey>('lite')
 
@@ -52,6 +56,7 @@ let processor: ScriptProcessorNode | null = null
 let animationId: number | null = null
 
 let socket: WebSocket | null = null
+let currentAudio: HTMLAudioElement | null = null
 
 function selectModel(model: ModelKey) {
   selectedModel.value = model
@@ -85,12 +90,15 @@ function connectBackend() {
   }
 }
 
-async function sendChat() {
-  const text = userText.value.trim()
+async function sendChat(textFromVoice?: string, shouldSpeak = true) {
+  const text = (textFromVoice ?? userText.value).trim()
+
   if (!text) {
     aiReply.value = '你还没有输入内容。'
     return
   }
+
+  userText.value = text
 
   try {
     isChatLoading.value = true
@@ -114,6 +122,10 @@ async function sendChat() {
     if (data.ok) {
       aiReply.value = data.reply
       message.value = '林曦回复完成'
+
+      if (shouldSpeak && autoSpeakEnabled.value) {
+        await speakText(data.reply)
+      }
     } else {
       aiReply.value = data.reply || '林曦调用模型失败。'
       message.value = '模型调用失败'
@@ -124,16 +136,94 @@ async function sendChat() {
     message.value = '请求后端失败'
   } finally {
     isChatLoading.value = false
-    status.value = 'idle'
+
+    if (!isTtsLoading.value) {
+      status.value = 'idle'
+    }
   }
 }
 
-async function recognizeLastAudio() {
+async function speakText(text?: string) {
+  const content = (text ?? aiReply.value).trim()
+
+  if (!content) {
+    ttsMessage.value = '没有可播放的文字。'
+    return
+  }
+
+  try {
+    isTtsLoading.value = true
+    status.value = 'speaking'
+    message.value = '林曦正在合成语音...'
+    ttsMessage.value = '语音合成中...'
+
+    const response = await fetch('http://127.0.0.1:8000/tts/speak', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text: content
+      })
+    })
+
+    const data = await response.json()
+
+    if (!data.ok) {
+      ttsMessage.value = data.message || 'TTS 合成失败。'
+      message.value = '林曦语音合成失败'
+      return
+    }
+
+    const audioUrl = `http://127.0.0.1:8000${data.audio_url}`
+
+    if (currentAudio) {
+      currentAudio.pause()
+      currentAudio = null
+    }
+
+    currentAudio = new Audio(audioUrl)
+
+    currentAudio.onplay = () => {
+      message.value = '林曦正在说话...'
+      ttsMessage.value = '正在播放林曦语音'
+      status.value = 'speaking'
+    }
+
+    currentAudio.onended = () => {
+      message.value = '林曦说完了'
+      ttsMessage.value = '语音播放完成'
+      status.value = 'idle'
+    }
+
+    currentAudio.onerror = () => {
+      ttsMessage.value = '浏览器播放音频失败。'
+      message.value = '语音播放失败'
+      status.value = 'idle'
+    }
+
+    await currentAudio.play()
+  } catch (error) {
+    console.error(error)
+    ttsMessage.value = 'TTS 请求失败，或者浏览器拦截了自动播放。可以再点一次“播放林曦回复”。'
+    message.value = '语音播放失败'
+  } finally {
+    isTtsLoading.value = false
+  }
+}
+
+async function recognizeLastAudio(autoSendToLlm = false) {
   try {
     isAsrLoading.value = true
     status.value = 'recognizing'
-    message.value = '林曦正在识别刚才的语音...'
-    asrText.value = '识别中...'
+
+    if (autoSendToLlm) {
+      message.value = '林曦正在识别语音，并准备回复...'
+      asrText.value = '识别中，识别完成后会自动发送给林曦...'
+    } else {
+      message.value = '林曦正在识别刚才的语音...'
+      asrText.value = '识别中...'
+    }
 
     const response = await fetch('http://127.0.0.1:8000/asr/recognize-last', {
       method: 'POST'
@@ -144,7 +234,12 @@ async function recognizeLastAudio() {
     if (data.ok) {
       asrText.value = data.text
       userText.value = data.text
-      message.value = '语音识别完成'
+
+      if (autoSendToLlm) {
+        await sendChat(data.text, true)
+      } else {
+        message.value = '语音识别完成'
+      }
     } else {
       asrText.value = data.message || '语音识别失败'
       message.value = '语音识别失败'
@@ -155,7 +250,10 @@ async function recognizeLastAudio() {
     message.value = '请求 ASR 失败'
   } finally {
     isAsrLoading.value = false
-    status.value = 'idle'
+
+    if (!isChatLoading.value && !isTtsLoading.value) {
+      status.value = 'idle'
+    }
   }
 }
 
@@ -169,7 +267,7 @@ async function startListening() {
     status.value = 'listening'
     message.value = '林曦正在听你说话...'
     pcmChunkCount.value = 0
-    asrText.value = '录音中，结束后可以点击“识别刚才录音”'
+    asrText.value = '录音中，结束后可以点击“识别刚才录音”或“一键语音问林曦”'
 
     socket.send('START_PCM')
 
@@ -237,7 +335,13 @@ function startPcmStreaming() {
     const resampled = resampleTo16k(inputData, sourceSampleRate)
     const pcm16 = float32ToInt16(resampled)
 
-    socket.send(pcm16.buffer)
+    const pcmBuffer = pcm16.buffer as ArrayBuffer
+    const audioData = pcmBuffer.slice(
+      pcm16.byteOffset,
+      pcm16.byteOffset + pcm16.byteLength
+    )
+
+    socket.send(audioData)
     pcmChunkCount.value += 1
   }
 
@@ -358,18 +462,34 @@ function stopListening() {
           placeholder="和林曦说句话，例如：你好，你是谁？"
         ></textarea>
 
-        <button class="send-button" @click="sendChat" :disabled="isChatLoading">
-          {{ isChatLoading ? '思考中...' : '发送给林曦' }}
-        </button>
+        <label class="toggle-line">
+          <input v-model="autoSpeakEnabled" type="checkbox" />
+          林曦回复后自动开口说话
+        </label>
+
+        <div class="chat-actions">
+          <button class="send-button" @click="sendChat()" :disabled="isChatLoading || isTtsLoading">
+            {{ isChatLoading ? '思考中...' : '发送给林曦' }}
+          </button>
+
+          <button class="speak-button" @click="speakText()" :disabled="isTtsLoading">
+            {{ isTtsLoading ? '合成中...' : '播放林曦回复' }}
+          </button>
+        </div>
 
         <div class="reply-box">
           <div class="reply-title">林曦回复</div>
           <div class="reply-text">{{ aiReply }}</div>
         </div>
+
+        <div class="tts-box">
+          <div class="reply-title">TTS 状态</div>
+          <div class="reply-text">{{ ttsMessage }}</div>
+        </div>
       </div>
 
       <div class="voice-box">
-        <div class="section-title">语音识别测试</div>
+        <div class="section-title">语音交互测试</div>
 
         <div class="voice-buttons">
           <button @click="connectBackend">
@@ -384,8 +504,16 @@ function stopListening() {
             结束录音
           </button>
 
-          <button @click="recognizeLastAudio" :disabled="isAsrLoading || status === 'listening'">
+          <button @click="recognizeLastAudio(false)" :disabled="isAsrLoading || status === 'listening'">
             {{ isAsrLoading ? '识别中...' : '识别刚才录音' }}
+          </button>
+
+          <button
+            class="voice-ask-button"
+            @click="recognizeLastAudio(true)"
+            :disabled="isAsrLoading || isChatLoading || isTtsLoading || status === 'listening'"
+          >
+            {{ isAsrLoading || isChatLoading || isTtsLoading ? '处理中...' : '一键语音问林曦' }}
           </button>
         </div>
 
@@ -465,6 +593,11 @@ function stopListening() {
 .pet-avatar.recognizing {
   transform: scale(1.03);
   box-shadow: 0 0 48px rgba(45, 212, 191, 0.8);
+}
+
+.pet-avatar.speaking {
+  transform: scale(1.08);
+  box-shadow: 0 0 56px rgba(244, 114, 182, 0.95);
 }
 
 .pet-avatar.error {
@@ -548,14 +681,33 @@ function stopListening() {
   color: rgba(255, 255, 255, 0.55);
 }
 
-.send-button {
+.toggle-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 12px;
-  width: 100%;
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.chat-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.send-button {
   background: #2563eb;
 }
 
+.speak-button {
+  background: #db2777;
+}
+
 .reply-box,
-.asr-box {
+.asr-box,
+.tts-box {
   margin-top: 14px;
   padding: 14px;
   border-radius: 14px;
@@ -632,6 +784,10 @@ button:disabled {
 
 .voice-buttons button:nth-child(4) {
   background: #059669;
+}
+
+.voice-ask-button {
+  background: #ea580c;
 }
 
 .backend-box {
