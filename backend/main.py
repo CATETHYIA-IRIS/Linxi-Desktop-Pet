@@ -117,6 +117,14 @@ def recognize_last_audio():
         }
 
 
+ALLOWED_SPEAKERS = {
+    "default",
+    "zh_female_vv_uranus_bigtts",
+    "S_DDV1VAL22",
+    "S_p4f3VAL22",
+}
+
+
 @app.post("/tts/speak")
 def speak_text(req: TtsRequest):
     text = req.text.strip()
@@ -128,10 +136,21 @@ def speak_text(req: TtsRequest):
             "message": "TTS 文本为空，无法合成语音。"
         }
 
+    speaker = req.speaker or "default"
+
+    if speaker not in ALLOWED_SPEAKERS:
+        return {
+            "ok": False,
+            "audio_url": "",
+            "message": f"不支持的音色：{speaker}"
+        }
+
+    resolved_speaker = None if speaker == "default" else speaker
+
     output_path = AUDIO_DIR / f"linxi_reply_{uuid.uuid4().hex}.mp3"
 
     try:
-        synthesize_text_to_audio_file(text, output_path, req.speaker)
+        synthesize_text_to_audio_file(text, output_path, resolved_speaker)
 
         return {
             "ok": True,
