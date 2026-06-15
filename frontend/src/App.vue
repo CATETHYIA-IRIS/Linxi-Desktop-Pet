@@ -1,79 +1,75 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
-type PetStatus = 'idle' | 'listening' | 'thinking' | 'recognizing' | 'speaking' | 'error'
+type CharacterState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'happy' | 'error'
 type ModelKey = 'pro' | 'lite' | 'mini'
 type TtsMode = 'whole' | 'sentence'
 type SpeakerKey = 'default' | 'S_DDV1VAL22' | 'S_p4f3VAL22'
 
-const status = ref<PetStatus>('idle')
+const characterState = ref<CharacterState>('idle')
 const volume = ref(0)
-const message = ref('林曦正在待机')
+const statusLabel = ref('待机中')
 
-const backendStatus = ref('后端未连接')
-const backendMessage = ref('暂无后端消息')
+const backendStatus = ref('未连接')
+const backendMessage = ref('')
 const pcmChunkCount = ref(0)
 
 const userText = ref('')
-const aiReply = ref('你好，我是林曦。现在我能听、能想、能说，也开始学习更自然地分句说话了。')
+const aiReply = ref('你好，我是林曦。')
 const isChatLoading = ref(false)
 
-const asrText = ref('暂无语音识别结果')
-const streamAsrText = ref('暂无实时字幕')
-const streamAsrStatus = ref('流式 ASR 未连接')
+const asrText = ref('')
+const streamAsrText = ref('')
+const streamAsrStatus = ref('')
 const isAsrLoading = ref(false)
 
 const isTtsLoading = ref(false)
-const ttsMessage = ref('暂无语音播放')
-const autoSpeakEnabled = ref(true)
-const ttsMode = ref<TtsMode>('sentence')
 const ttsSegmentIndex = ref(0)
 const ttsSegmentTotal = ref(0)
 
+const autoSpeakEnabled = ref(true)
+const ttsMode = ref<TtsMode>('sentence')
 const selectedModel = ref<ModelKey>('lite')
 const selectedSpeaker = ref<SpeakerKey>('default')
 
+const showSettings = ref(false)
+
 const speakerCards = [
-  {
-    key: 'default' as SpeakerKey,
-    name: '默认音色',
-    id: '',
-    desc: '豆包内置女声'
-  },
-  {
-    key: 'S_DDV1VAL22' as SpeakerKey,
-    name: '音色 1',
-    id: 'S_DDV1VAL22',
-    desc: '自定义克隆音色'
-  },
-  {
-    key: 'S_p4f3VAL22' as SpeakerKey,
-    name: '音色 2',
-    id: 'S_p4f3VAL22',
-    desc: '自定义克隆音色'
-  }
+  { key: 'default' as SpeakerKey, name: '默认', id: '', desc: '内置女声' },
+  { key: 'S_DDV1VAL22' as SpeakerKey, name: '音色 1', id: 'S_DDV1VAL22', desc: '克隆音色' },
+  { key: 'S_p4f3VAL22' as SpeakerKey, name: '音色 2', id: 'S_p4f3VAL22', desc: '克隆音色' }
 ]
 
 const modelCards = [
-  {
-    key: 'pro' as ModelKey,
-    name: 'Pro',
-    model: 'doubao-seed-2-0-pro-260215',
-    desc: '最强效果，适合最终展示'
-  },
-  {
-    key: 'lite' as ModelKey,
-    name: 'Lite',
-    model: 'doubao-seed-2-0-lite-260428',
-    desc: '日常开发推荐，均衡稳定'
-  },
-  {
-    key: 'mini' as ModelKey,
-    name: 'Mini',
-    model: 'doubao-seed-2-0-mini-260428',
-    desc: '最快最省，适合测试'
-  }
+  { key: 'pro' as ModelKey, name: 'Pro', model: 'doubao-seed-2-0-pro-260215', desc: '最强' },
+  { key: 'lite' as ModelKey, name: 'Lite', model: 'doubao-seed-2-0-lite-260428', desc: '均衡' },
+  { key: 'mini' as ModelKey, name: 'Mini', model: 'doubao-seed-2-0-mini-260428', desc: '最快' }
 ]
+
+// 状态素材映射 — 有文件时替换为实际路径，没有则 null 走 CSS 占位
+const stateVideos: Record<CharacterState, string | null> = {
+  idle:      null,
+  listening: null,
+  thinking:  null,
+  speaking:  null,
+  happy:     null,
+  error:     null,
+}
+
+const stateImage = '/src/assets/linxi/avatar_idle.png'
+
+const currentVideo = computed(() => stateVideos[characterState.value])
+
+const stateGlowColor: Record<CharacterState, string> = {
+  idle:      'rgba(125, 211, 252, 0.5)',
+  listening: 'rgba(34, 211, 238, 0.9)',
+  thinking:  'rgba(250, 204, 21, 0.7)',
+  speaking:  'rgba(244, 114, 182, 0.9)',
+  happy:     'rgba(134, 239, 172, 0.8)',
+  error:     'rgba(248, 113, 113, 0.8)',
+}
+
+const characterGlow = computed(() => stateGlowColor[characterState.value])
 
 const TARGET_SAMPLE_RATE = 16000
 
@@ -83,17 +79,11 @@ let microphone: MediaStreamAudioSourceNode | null = null
 let mediaStream: MediaStream | null = null
 let processor: ScriptProcessorNode | null = null
 let animationId: number | null = null
-
 let socket: WebSocket | null = null
 let currentAudio: HTMLAudioElement | null = null
 
-function selectModel(model: ModelKey) {
-  selectedModel.value = model
-}
-
-function selectSpeaker(speaker: SpeakerKey) {
-  selectedSpeaker.value = speaker
-}
+function selectModel(model: ModelKey) { selectedModel.value = model }
+function selectSpeaker(speaker: SpeakerKey) { selectedSpeaker.value = speaker }
 
 function handleBackendMessage(rawMessage: string) {
   try {
@@ -101,18 +91,16 @@ function handleBackendMessage(rawMessage: string) {
 
     if (data.type === 'asr_stream') {
       streamAsrText.value = data.text || ''
-      streamAsrStatus.value = data.is_final ? '流式 ASR 已返回最终结果' : '流式 ASR 正在识别...'
-
+      streamAsrStatus.value = data.is_final ? '识别完成' : '识别中...'
       if (data.text) {
         asrText.value = data.text
         userText.value = data.text
       }
-
       return
     }
 
     if (data.type === 'asr_stream_status') {
-      streamAsrStatus.value = data.message || '流式 ASR 状态更新'
+      streamAsrStatus.value = data.message || ''
       backendMessage.value = data.message || backendMessage.value
       return
     }
@@ -122,101 +110,78 @@ function handleBackendMessage(rawMessage: string) {
       backendMessage.value = data.message || backendMessage.value
       return
     }
-  } catch {
-    // 普通后端文本消息，走下面的默认显示
-  }
+  } catch { /* plain text */ }
 
   backendMessage.value = rawMessage
 }
 
 function connectBackend() {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    backendStatus.value = '后端已经连接'
-    return
-  }
+  if (socket && socket.readyState === WebSocket.OPEN) return
 
   socket = new WebSocket('ws://127.0.0.1:8000/ws')
 
   socket.onopen = () => {
-    backendStatus.value = '后端已连接'
-    backendMessage.value = 'WebSocket 连接成功'
+    backendStatus.value = '已连接'
     socket?.send('你好，后端，我是林曦前端')
   }
 
-  socket.onmessage = (event) => {
-    handleBackendMessage(event.data)
-  }
+  socket.onmessage = (event) => handleBackendMessage(event.data)
 
   socket.onerror = () => {
-    backendStatus.value = '后端连接出错'
+    backendStatus.value = '连接出错'
     backendMessage.value = '请检查 Python 后端是否正在运行'
   }
 
-  socket.onclose = () => {
-    backendStatus.value = '后端已断开'
-  }
+  socket.onclose = () => { backendStatus.value = '已断开' }
 }
 
 async function sendChat(textFromVoice?: string, shouldSpeak = true) {
   const text = (textFromVoice ?? userText.value).trim()
-
-  if (!text) {
-    aiReply.value = '你还没有输入内容。'
-    return
-  }
+  if (!text) return
 
   userText.value = text
 
   try {
     isChatLoading.value = true
-    status.value = 'thinking'
-    message.value = '林曦正在思考...'
-    aiReply.value = '林曦正在思考中...'
+    characterState.value = 'thinking'
+    statusLabel.value = '思考中'
+    aiReply.value = '...'
 
     const response = await fetch('http://127.0.0.1:8000/chat', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        text,
-        model: selectedModel.value
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, model: selectedModel.value })
     })
 
     const data = await response.json()
 
     if (data.ok) {
       aiReply.value = data.reply
-      message.value = '林曦回复完成'
-
+      statusLabel.value = '回复完成'
       if (shouldSpeak && autoSpeakEnabled.value) {
         await speakText(data.reply)
       }
     } else {
-      aiReply.value = data.reply || '林曦调用模型失败。'
-      message.value = '模型调用失败'
+      aiReply.value = data.reply || '调用失败'
+      statusLabel.value = '调用失败'
+      characterState.value = 'error'
     }
   } catch (error) {
     console.error(error)
-    aiReply.value = '请求后端失败，请检查 Python 后端是否正在运行。'
-    message.value = '请求后端失败'
+    aiReply.value = '请求失败，请检查后端'
+    statusLabel.value = '连接失败'
+    characterState.value = 'error'
   } finally {
     isChatLoading.value = false
-
     if (!isTtsLoading.value) {
-      status.value = 'idle'
+      characterState.value = 'idle'
+      statusLabel.value = '待机中'
     }
   }
 }
 
 function splitTextIntoSentences(text: string): string[] {
-  const cleanText = text
-    .replace(/\r/g, '')
-    .replace(/\n+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
+  const cleanText = text.replace(/\r/g, '').replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim()
   if (!cleanText) return []
 
   const matched = cleanText.match(/[^。！？!?；;\n]+[。！？!?；;]?/g) || [cleanText]
@@ -225,14 +190,12 @@ function splitTextIntoSentences(text: string): string[] {
   for (const item of matched) {
     const sentence = item.trim()
     if (!sentence) continue
-
     if (sentence.length <= 90) {
       result.push(sentence)
-      continue
-    }
-
-    for (let i = 0; i < sentence.length; i += 90) {
-      result.push(sentence.slice(i, i + 90))
+    } else {
+      for (let i = 0; i < sentence.length; i += 90) {
+        result.push(sentence.slice(i, i + 90))
+      }
     }
   }
 
@@ -244,20 +207,12 @@ async function requestTtsAudio(content: string): Promise<string> {
 
   const response = await fetch('http://127.0.0.1:8000/tts/speak', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      text: content,
-      speaker: speakerId
-    })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: content, speaker: speakerId })
   })
 
   const data = await response.json()
-
-  if (!data.ok) {
-    throw new Error(data.message || 'TTS 合成失败。')
-  }
+  if (!data.ok) throw new Error(data.message || 'TTS 合成失败')
 
   return `http://127.0.0.1:8000${data.audio_url}`
 }
@@ -271,117 +226,62 @@ async function playAudioUrl(audioUrl: string): Promise<void> {
   currentAudio = new Audio(audioUrl)
 
   await new Promise<void>((resolve, reject) => {
-    if (!currentAudio) {
-      reject(new Error('音频对象创建失败。'))
-      return
-    }
-
-    currentAudio.onplay = () => {
-      status.value = 'speaking'
-    }
-
-    currentAudio.onended = () => {
-      resolve()
-    }
-
-    currentAudio.onerror = () => {
-      reject(new Error('浏览器播放音频失败。'))
-    }
-
+    if (!currentAudio) { reject(new Error('音频对象创建失败')); return }
+    currentAudio.onplay = () => { characterState.value = 'speaking'; statusLabel.value = '说话中' }
+    currentAudio.onended = () => resolve()
+    currentAudio.onerror = () => reject(new Error('浏览器播放音频失败'))
     currentAudio.play().catch(reject)
   })
 }
 
-async function speakWholeText(content: string) {
-  ttsSegmentIndex.value = 1
-  ttsSegmentTotal.value = 1
-  ttsMessage.value = '整段语音合成中...'
-  message.value = '林曦正在合成整段语音...'
-
-  const audioUrl = await requestTtsAudio(content)
-
-  ttsMessage.value = '整段语音播放中...'
-  message.value = '林曦正在说话...'
-
-  await playAudioUrl(audioUrl)
-}
-
-async function speakSentenceQueue(content: string) {
-  const sentences = splitTextIntoSentences(content)
-
-  if (sentences.length === 0) {
-    throw new Error('没有可播放的句子。')
-  }
-
-  ttsSegmentTotal.value = sentences.length
-
-  for (let i = 0; i < sentences.length; i++) {
-    const sentence = sentences[i]
-    ttsSegmentIndex.value = i + 1
-
-    ttsMessage.value = `第 ${i + 1}/${sentences.length} 句合成中：${sentence}`
-    message.value = `林曦正在准备第 ${i + 1} 句...`
-
-    const audioUrl = await requestTtsAudio(sentence)
-
-    ttsMessage.value = `第 ${i + 1}/${sentences.length} 句播放中：${sentence}`
-    message.value = `林曦正在说第 ${i + 1} 句...`
-
-    await playAudioUrl(audioUrl)
-  }
-}
-
 async function speakText(text?: string) {
   const content = (text ?? aiReply.value).trim()
-
-  if (!content) {
-    ttsMessage.value = '没有可播放的文字。'
-    return
-  }
+  if (!content) return
 
   try {
     isTtsLoading.value = true
-    status.value = 'speaking'
+    characterState.value = 'speaking'
 
     if (ttsMode.value === 'sentence') {
-      await speakSentenceQueue(content)
+      const sentences = splitTextIntoSentences(content)
+      if (sentences.length === 0) throw new Error('没有可播放的句子')
+      ttsSegmentTotal.value = sentences.length
+
+      for (let i = 0; i < sentences.length; i++) {
+        ttsSegmentIndex.value = i + 1
+        const audioUrl = await requestTtsAudio(sentences[i])
+        await playAudioUrl(audioUrl)
+      }
     } else {
-      await speakWholeText(content)
+      ttsSegmentIndex.value = 1
+      ttsSegmentTotal.value = 1
+      const audioUrl = await requestTtsAudio(content)
+      await playAudioUrl(audioUrl)
     }
 
-    message.value = '林曦说完了'
-    ttsMessage.value = ttsMode.value === 'sentence'
-      ? `分句播放完成，共 ${ttsSegmentTotal.value} 句`
-      : '整段播放完成'
+    characterState.value = 'happy'
+    statusLabel.value = '说完了'
+    setTimeout(() => {
+      characterState.value = 'idle'
+      statusLabel.value = '待机中'
+    }, 1500)
   } catch (error) {
     console.error(error)
-    ttsMessage.value = error instanceof Error
-      ? error.message
-      : 'TTS 请求失败，或者浏览器拦截了自动播放。可以再点一次“播放林曦回复”。'
-    message.value = '语音播放失败'
+    characterState.value = 'error'
+    statusLabel.value = '语音失败'
   } finally {
     isTtsLoading.value = false
-    status.value = 'idle'
   }
 }
 
 async function recognizeLastAudio(autoSendToLlm = false) {
   try {
     isAsrLoading.value = true
-    status.value = 'recognizing'
+    characterState.value = 'thinking'
+    statusLabel.value = '识别中'
+    asrText.value = '识别中...'
 
-    if (autoSendToLlm) {
-      message.value = '林曦正在识别语音，并准备回复...'
-      asrText.value = '识别中，识别完成后会自动发送给林曦...'
-    } else {
-      message.value = '林曦正在识别刚才的语音...'
-      asrText.value = '识别中...'
-    }
-
-    const response = await fetch('http://127.0.0.1:8000/asr/recognize-last', {
-      method: 'POST'
-    })
-
+    const response = await fetch('http://127.0.0.1:8000/asr/recognize-last', { method: 'POST' })
     const data = await response.json()
 
     if (data.ok) {
@@ -391,21 +291,25 @@ async function recognizeLastAudio(autoSendToLlm = false) {
       if (autoSendToLlm) {
         await sendChat(data.text, true)
       } else {
-        message.value = '语音识别完成'
+        statusLabel.value = '识别完成'
+        characterState.value = 'idle'
       }
     } else {
-      asrText.value = data.message || '语音识别失败'
-      message.value = '语音识别失败'
+      asrText.value = data.message || '识别失败'
+      statusLabel.value = '识别失败'
+      characterState.value = 'error'
     }
   } catch (error) {
     console.error(error)
-    asrText.value = '请求 ASR 接口失败，请检查 Python 后端是否正在运行。'
-    message.value = '请求 ASR 失败'
+    asrText.value = '请求 ASR 接口失败'
+    characterState.value = 'error'
   } finally {
     isAsrLoading.value = false
-
     if (!isChatLoading.value && !isTtsLoading.value) {
-      status.value = 'idle'
+      if (characterState.value !== 'error') {
+        characterState.value = 'idle'
+        statusLabel.value = '待机中'
+      }
     }
   }
 }
@@ -413,26 +317,20 @@ async function recognizeLastAudio(autoSendToLlm = false) {
 async function startListening() {
   try {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      backendMessage.value = '请先点击“连接后端”'
+      backendMessage.value = '请先点击连接后端'
       return
     }
 
-    status.value = 'listening'
-    message.value = '林曦正在听你说话...'
+    characterState.value = 'listening'
+    statusLabel.value = '聆听中'
     pcmChunkCount.value = 0
-    asrText.value = '录音中，结束后可以点击“识别刚才录音”或“一键语音问林曦”'
-    streamAsrText.value = '等待实时字幕...'
-    streamAsrStatus.value = '正在连接流式 ASR...'
+    streamAsrText.value = ''
+    streamAsrStatus.value = '正在连接...'
 
     socket.send('START_PCM')
 
     mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     })
 
     audioContext = new AudioContext()
@@ -442,8 +340,8 @@ async function startListening() {
     startPcmStreaming()
   } catch (error) {
     console.error(error)
-    status.value = 'error'
-    message.value = '麦克风权限获取失败，请检查浏览器权限'
+    characterState.value = 'error'
+    statusLabel.value = '麦克风失败'
   }
 }
 
@@ -458,17 +356,10 @@ function startVolumeMonitor() {
 
   function updateVolume() {
     if (!analyser) return
-
     analyser.getByteFrequencyData(dataArray)
-
     let sum = 0
-    for (let i = 0; i < dataArray.length; i++) {
-      sum += dataArray[i]
-    }
-
-    const average = sum / dataArray.length
-    volume.value = Math.min(100, Math.round(average * 2))
-
+    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i]
+    volume.value = Math.min(100, Math.round((sum / dataArray.length) * 2))
     animationId = requestAnimationFrame(updateVolume)
   }
 
@@ -479,101 +370,56 @@ function startPcmStreaming() {
   if (!audioContext || !microphone) return
 
   const sourceSampleRate = audioContext.sampleRate
-
   processor = audioContext.createScriptProcessor(4096, 1, 1)
 
   processor.onaudioprocess = (event) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return
-
     const inputData = event.inputBuffer.getChannelData(0)
-
     const resampled = resampleTo16k(inputData, sourceSampleRate)
     const pcm16 = float32ToInt16(resampled)
-
-    const pcmBuffer = pcm16.buffer as ArrayBuffer
-    const audioData = pcmBuffer.slice(
-      pcm16.byteOffset,
-      pcm16.byteOffset + pcm16.byteLength
-    )
-
+    const audioData = (pcm16.buffer as ArrayBuffer).slice(pcm16.byteOffset, pcm16.byteOffset + pcm16.byteLength)
     socket.send(audioData)
     pcmChunkCount.value += 1
   }
 
   microphone.connect(processor)
   processor.connect(audioContext.destination)
-
-  backendMessage.value = `开始发送 PCM 音频流，原始采样率：${sourceSampleRate}Hz，目标采样率：16000Hz`
 }
 
 function resampleTo16k(input: Float32Array, sourceSampleRate: number): Float32Array {
-  if (sourceSampleRate === TARGET_SAMPLE_RATE) {
-    return input
-  }
-
+  if (sourceSampleRate === TARGET_SAMPLE_RATE) return input
   const ratio = sourceSampleRate / TARGET_SAMPLE_RATE
   const newLength = Math.round(input.length / ratio)
   const result = new Float32Array(newLength)
-
   for (let i = 0; i < newLength; i++) {
     const sourceIndex = i * ratio
     const leftIndex = Math.floor(sourceIndex)
     const rightIndex = Math.min(leftIndex + 1, input.length - 1)
-    const weight = sourceIndex - leftIndex
-
-    result[i] = input[leftIndex] * (1 - weight) + input[rightIndex] * weight
+    result[i] = input[leftIndex] * (1 - (sourceIndex - leftIndex)) + input[rightIndex] * (sourceIndex - leftIndex)
   }
-
   return result
 }
 
 function float32ToInt16(input: Float32Array): Int16Array {
   const output = new Int16Array(input.length)
-
   for (let i = 0; i < input.length; i++) {
-    let sample = input[i]
-
-    if (sample > 1) sample = 1
-    if (sample < -1) sample = -1
-
-    output[i] = sample < 0
-      ? sample * 0x8000
-      : sample * 0x7fff
+    const s = Math.max(-1, Math.min(1, input[i]))
+    output[i] = s < 0 ? s * 0x8000 : s * 0x7fff
   }
-
   return output
 }
 
 function stopListening() {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send('STOP_PCM')
-  }
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send('STOP_PCM')
 
-  status.value = 'idle'
-  message.value = '录音已结束，可以识别刚才录音'
+  characterState.value = 'idle'
+  statusLabel.value = '录音结束'
   volume.value = 0
 
-  if (processor) {
-    processor.disconnect()
-    processor.onaudioprocess = null
-    processor = null
-  }
-
-  if (animationId) {
-    cancelAnimationFrame(animationId)
-    animationId = null
-  }
-
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(track => track.stop())
-    mediaStream = null
-  }
-
-  if (audioContext) {
-    audioContext.close()
-    audioContext = null
-  }
-
+  if (processor) { processor.disconnect(); processor.onaudioprocess = null; processor = null }
+  if (animationId) { cancelAnimationFrame(animationId); animationId = null }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null }
+  if (audioContext) { audioContext.close(); audioContext = null }
   analyser = null
   microphone = null
 }
@@ -581,447 +427,519 @@ function stopListening() {
 
 <template>
   <main class="page">
-    <section class="pet-card">
-      <div class="pet-avatar" :class="status">
-        林曦
+
+    <!-- 背景粒子装饰 -->
+    <div class="bg-orb bg-orb-1"></div>
+    <div class="bg-orb bg-orb-2"></div>
+    <div class="bg-orb bg-orb-3"></div>
+
+    <!-- 角色视觉区 -->
+    <div class="character-stage" :class="characterState">
+      <div class="character-frame" :style="{ '--glow': characterGlow }">
+
+        <!-- 有视频时播放视频，没有时显示图片或 CSS 占位 -->
+        <video
+          v-if="currentVideo"
+          :src="currentVideo"
+          autoplay
+          loop
+          muted
+          playsinline
+          class="character-media"
+        />
+        <img
+          v-else-if="stateImage"
+          :src="stateImage"
+          class="character-media character-img"
+          @error="(e) => (e.target as HTMLImageElement).style.display = 'none'"
+        />
+        <div v-else class="character-placeholder">
+          <span class="placeholder-kanji">林曦</span>
+        </div>
+
+        <!-- 状态光环 -->
+        <div class="state-ring" :class="characterState"></div>
       </div>
 
-      <div class="status-text">
-        {{ message }}
+      <!-- 状态标签 -->
+      <div class="state-badge" :class="characterState">{{ statusLabel }}</div>
+
+      <!-- 说话时音量波形 -->
+      <div v-if="characterState === 'listening'" class="volume-waves">
+        <span v-for="i in 5" :key="i" class="wave-bar" :style="{ animationDelay: `${i * 0.1}s`, height: `${8 + (volume / 100) * 28}px` }"></span>
       </div>
+    </div>
 
-      <div class="model-box">
-        <div class="section-title">选择大模型</div>
-
-        <div class="model-cards">
-          <button
-            v-for="item in modelCards"
-            :key="item.key"
-            class="model-card"
-            :class="{ active: selectedModel === item.key }"
-            @click="selectModel(item.key)"
-          >
-            <div class="model-name">{{ item.name }}</div>
-            <div class="model-id">{{ item.model }}</div>
-            <div class="model-desc">{{ item.desc }}</div>
-          </button>
-        </div>
+    <!-- 实时字幕区 -->
+    <div class="subtitle-area" v-if="streamAsrText || aiReply">
+      <div v-if="characterState === 'listening' && streamAsrText" class="subtitle-user">
+        {{ streamAsrText }}
       </div>
-
-      <div class="speaker-box">
-        <div class="section-title">选择音色</div>
-
-        <div class="model-cards">
-          <button
-            v-for="item in speakerCards"
-            :key="item.key"
-            class="model-card speaker-card"
-            :class="{ active: selectedSpeaker === item.key }"
-            @click="selectSpeaker(item.key)"
-          >
-            <div class="model-name">{{ item.name }}</div>
-            <div class="model-id">{{ item.id || '默认' }}</div>
-            <div class="model-desc">{{ item.desc }}</div>
-          </button>
-        </div>
+      <div v-if="characterState === 'speaking' || characterState === 'thinking' || characterState === 'happy'" class="subtitle-linxi">
+        {{ aiReply }}
       </div>
+    </div>
 
-      <div class="chat-box">
-        <div class="section-title">文字对话测试</div>
+    <!-- 主操作栏 -->
+    <div class="action-bar">
+      <button class="action-btn btn-connect" @click="connectBackend" :title="backendStatus">
+        <span class="btn-dot" :class="backendStatus === '已连接' ? 'dot-on' : 'dot-off'"></span>
+        连接
+      </button>
 
-        <textarea
-          v-model="userText"
-          class="chat-input"
-          placeholder="和林曦说句话，例如：你好，你是谁？"
-        ></textarea>
+      <button
+        class="action-btn btn-mic"
+        :class="{ active: characterState === 'listening' }"
+        @click="characterState === 'listening' ? stopListening() : startListening()"
+        :disabled="isChatLoading || isTtsLoading"
+      >
+        {{ characterState === 'listening' ? '停止' : '录音' }}
+      </button>
 
-        <label class="toggle-line">
-          <input v-model="autoSpeakEnabled" type="checkbox" />
-          林曦回复后自动开口说话
-        </label>
+      <button
+        class="action-btn btn-ask"
+        @click="recognizeLastAudio(true)"
+        :disabled="isAsrLoading || isChatLoading || isTtsLoading || characterState === 'listening'"
+      >
+        {{ isAsrLoading || isChatLoading || isTtsLoading ? '处理中' : '语音问' }}
+      </button>
 
-        <div class="tts-mode-row">
-          <span>语音播放模式：</span>
-          <label>
-            <input v-model="ttsMode" type="radio" value="sentence" />
-            分句队列播放
-          </label>
-          <label>
-            <input v-model="ttsMode" type="radio" value="whole" />
-            整段播放
-          </label>
-        </div>
+      <button
+        class="action-btn btn-send"
+        @click="sendChat()"
+        :disabled="isChatLoading || isTtsLoading"
+      >
+        {{ isChatLoading ? '思考中' : '发送' }}
+      </button>
 
-        <div class="chat-actions">
-          <button class="send-button" @click="sendChat()" :disabled="isChatLoading || isTtsLoading">
-            {{ isChatLoading ? '思考中...' : '发送给林曦' }}
-          </button>
+      <button
+        class="action-btn btn-speak"
+        @click="speakText()"
+        :disabled="isTtsLoading"
+      >
+        {{ isTtsLoading ? `${ttsSegmentIndex}/${ttsSegmentTotal}` : '朗读' }}
+      </button>
 
-          <button class="speak-button" @click="speakText()" :disabled="isTtsLoading">
-            {{ isTtsLoading ? '合成中...' : '播放林曦回复' }}
-          </button>
-        </div>
+      <button class="action-btn btn-settings" @click="showSettings = !showSettings">
+        设置
+      </button>
+    </div>
 
-        <div class="reply-box">
-          <div class="reply-title">林曦回复</div>
-          <div class="reply-text">{{ aiReply }}</div>
-        </div>
+    <!-- 文字输入区 -->
+    <div class="input-area">
+      <textarea
+        v-model="userText"
+        class="chat-input"
+        placeholder="输入消息，或点击录音后点语音问…"
+        rows="2"
+        @keydown.enter.exact.prevent="sendChat()"
+      ></textarea>
+    </div>
 
-        <div class="tts-box">
-          <div class="reply-title">TTS 状态</div>
-          <div class="stream-status">
-            当前进度：{{ ttsSegmentIndex }} / {{ ttsSegmentTotal }}
+    <!-- 回复展示区（说话或思考时高亮） -->
+    <div class="reply-area" v-if="aiReply && aiReply !== '...'">
+      <div class="reply-text">{{ aiReply }}</div>
+      <div v-if="isTtsLoading" class="tts-progress">{{ ttsSegmentIndex }} / {{ ttsSegmentTotal }}</div>
+    </div>
+
+    <!-- 设置面板 -->
+    <transition name="panel-slide">
+      <div v-if="showSettings" class="settings-panel">
+        <div class="panel-section">
+          <div class="panel-label">大模型</div>
+          <div class="chip-row">
+            <button
+              v-for="item in modelCards"
+              :key="item.key"
+              class="chip"
+              :class="{ active: selectedModel === item.key }"
+              @click="selectModel(item.key)"
+              :title="item.model"
+            >{{ item.name }}</button>
           </div>
-          <div class="reply-text">{{ ttsMessage }}</div>
+        </div>
+
+        <div class="panel-section">
+          <div class="panel-label">音色</div>
+          <div class="chip-row">
+            <button
+              v-for="item in speakerCards"
+              :key="item.key"
+              class="chip chip-speaker"
+              :class="{ active: selectedSpeaker === item.key }"
+              @click="selectSpeaker(item.key)"
+            >{{ item.name }}</button>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <div class="panel-label">播放模式</div>
+          <div class="chip-row">
+            <button class="chip" :class="{ active: ttsMode === 'sentence' }" @click="ttsMode = 'sentence'">分句</button>
+            <button class="chip" :class="{ active: ttsMode === 'whole' }" @click="ttsMode = 'whole'">整段</button>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <label class="toggle-row">
+            <input type="checkbox" v-model="autoSpeakEnabled" />
+            <span>回复后自动朗读</span>
+          </label>
+        </div>
+
+        <div class="panel-section panel-debug">
+          <div class="debug-line">后端：{{ backendStatus }}</div>
+          <div class="debug-line" v-if="backendMessage">{{ backendMessage }}</div>
+          <div class="debug-line" v-if="streamAsrStatus">ASR：{{ streamAsrStatus }}</div>
+          <div class="debug-line" v-if="characterState === 'listening'">PCM：{{ pcmChunkCount }} 段</div>
         </div>
       </div>
+    </transition>
 
-      <div class="voice-box">
-        <div class="section-title">语音交互测试</div>
-
-        <div class="voice-buttons">
-          <button @click="connectBackend">
-            连接后端
-          </button>
-
-          <button @click="startListening" :disabled="status === 'listening'">
-            开始录音
-          </button>
-
-          <button @click="stopListening" :disabled="status !== 'listening'">
-            结束录音
-          </button>
-
-          <button @click="recognizeLastAudio(false)" :disabled="isAsrLoading || status === 'listening'">
-            {{ isAsrLoading ? '识别中...' : '识别刚才录音' }}
-          </button>
-
-          <button
-            class="voice-ask-button"
-            @click="recognizeLastAudio(true)"
-            :disabled="isAsrLoading || isChatLoading || isTtsLoading || status === 'listening'"
-          >
-            {{ isAsrLoading || isChatLoading || isTtsLoading ? '处理中...' : '一键语音问林曦' }}
-          </button>
-        </div>
-
-        <div class="stream-asr-box">
-          <div class="reply-title">实时字幕</div>
-          <div class="stream-status">{{ streamAsrStatus }}</div>
-          <div class="reply-text">{{ streamAsrText }}</div>
-        </div>
-
-        <div class="asr-box">
-          <div class="reply-title">ASR 识别结果</div>
-          <div class="reply-text">{{ asrText }}</div>
-        </div>
-      </div>
-
-      <div class="volume-box">
-        <div class="volume-label">实时音量</div>
-        <div class="volume-bar">
-          <div class="volume-inner" :style="{ width: volume + '%' }"></div>
-        </div>
-        <div class="volume-number">{{ volume }}</div>
-      </div>
-
-      <div class="backend-box">
-        <div class="backend-title">后端状态</div>
-        <div>{{ backendStatus }}</div>
-        <div>{{ backendMessage }}</div>
-        <div>已发送 PCM 片段：{{ pcmChunkCount }}</div>
-        <div>音频格式：PCM16 / 16kHz / 单声道</div>
-      </div>
-    </section>
   </main>
 </template>
 
 <style scoped>
+*, *::before, *::after { box-sizing: border-box; }
+
 .page {
+  position: relative;
   width: 100vw;
   min-height: 100vh;
-  background: radial-gradient(circle at top, #263455, #111827 60%, #050816);
+  background: radial-gradient(ellipse at 50% 0%, #1a2a4a 0%, #0d1420 55%, #050810 100%);
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  color: white;
-  font-family: "Microsoft YaHei", sans-serif;
-  padding: 32px 0;
+  flex-direction: column;
+  align-items: center;
+  overflow: hidden;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  color: #e8f0ff;
+  padding-bottom: 32px;
 }
 
-.pet-card {
-  width: 760px;
-  padding: 32px;
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 0 40px rgba(90, 170, 255, 0.25);
-  text-align: center;
-  backdrop-filter: blur(16px);
-}
-
-.pet-avatar {
-  width: 150px;
-  height: 150px;
+/* 背景光球 */
+.bg-orb {
+  position: absolute;
   border-radius: 50%;
-  margin: 0 auto 24px;
+  filter: blur(80px);
+  pointer-events: none;
+  z-index: 0;
+}
+.bg-orb-1 {
+  width: 500px; height: 500px;
+  top: -120px; left: -100px;
+  background: rgba(56, 100, 200, 0.18);
+}
+.bg-orb-2 {
+  width: 400px; height: 400px;
+  top: 20%; right: -80px;
+  background: rgba(160, 80, 220, 0.12);
+}
+.bg-orb-3 {
+  width: 300px; height: 300px;
+  bottom: 10%; left: 30%;
+  background: rgba(30, 180, 200, 0.10);
+}
+
+/* ── 角色视觉区 ── */
+.character-stage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 40px;
+  margin-bottom: 12px;
+}
+
+.character-frame {
+  position: relative;
+  width: 300px;
+  height: 380px;
+  border-radius: 24px;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(40, 60, 100, 0.6), rgba(20, 30, 60, 0.8));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 60px var(--glow, rgba(125, 211, 252, 0.3)), inset 0 0 30px rgba(0,0,0,0.4);
+  transition: box-shadow 0.4s ease;
+}
+
+.character-media {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+}
+
+.character-placeholder {
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 32px;
-  font-weight: bold;
+  background: linear-gradient(135deg, rgba(100, 160, 255, 0.15), rgba(180, 100, 255, 0.15));
+}
+
+.placeholder-kanji {
+  font-size: 64px;
+  font-weight: 900;
   background: linear-gradient(135deg, #7dd3fc, #c084fc);
-  box-shadow: 0 0 32px rgba(125, 211, 252, 0.8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 4px;
+}
+
+/* 状态光环 */
+.state-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 24px;
+  pointer-events: none;
+  transition: box-shadow 0.4s ease, border-color 0.4s ease;
+  border: 2px solid transparent;
+}
+.state-ring.listening { border-color: rgba(34, 211, 238, 0.7); box-shadow: inset 0 0 20px rgba(34, 211, 238, 0.2); }
+.state-ring.thinking  { border-color: rgba(250, 204, 21, 0.6);  box-shadow: inset 0 0 20px rgba(250, 204, 21, 0.15); }
+.state-ring.speaking  { border-color: rgba(244, 114, 182, 0.7); box-shadow: inset 0 0 20px rgba(244, 114, 182, 0.2); }
+.state-ring.happy     { border-color: rgba(134, 239, 172, 0.7); box-shadow: inset 0 0 20px rgba(134, 239, 172, 0.2); }
+.state-ring.error     { border-color: rgba(248, 113, 113, 0.7); box-shadow: inset 0 0 20px rgba(248, 113, 113, 0.2); }
+
+/* 状态标签 */
+.state-badge {
+  margin-top: 12px;
+  padding: 4px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
   transition: all 0.3s ease;
 }
+.state-badge.listening { background: rgba(34, 211, 238, 0.15); border-color: rgba(34, 211, 238, 0.4); color: #67e8f9; }
+.state-badge.thinking  { background: rgba(250, 204, 21, 0.15);  border-color: rgba(250, 204, 21, 0.4);  color: #fde047; }
+.state-badge.speaking  { background: rgba(244, 114, 182, 0.15); border-color: rgba(244, 114, 182, 0.4); color: #f9a8d4; }
+.state-badge.happy     { background: rgba(134, 239, 172, 0.15); border-color: rgba(134, 239, 172, 0.4); color: #86efac; }
+.state-badge.error     { background: rgba(248, 113, 113, 0.15); border-color: rgba(248, 113, 113, 0.4); color: #fca5a5; }
 
-.pet-avatar.listening {
-  transform: scale(1.06);
-  box-shadow: 0 0 48px rgba(34, 211, 238, 1);
+/* 音量波形 */
+.volume-waves {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  height: 40px;
+}
+.wave-bar {
+  display: block;
+  width: 4px;
+  border-radius: 2px;
+  background: #22d3ee;
+  animation: wave-pulse 0.6s ease-in-out infinite alternate;
+  transition: height 0.08s linear;
+}
+@keyframes wave-pulse {
+  from { opacity: 0.5; transform: scaleY(0.7); }
+  to   { opacity: 1.0; transform: scaleY(1.0); }
 }
 
-.pet-avatar.thinking {
-  transform: scale(1.03);
-  box-shadow: 0 0 48px rgba(250, 204, 21, 0.8);
+/* ── 字幕区 ── */
+.subtitle-area {
+  z-index: 1;
+  width: min(580px, 90vw);
+  min-height: 36px;
+  text-align: center;
+  margin-bottom: 4px;
 }
 
-.pet-avatar.recognizing {
-  transform: scale(1.03);
-  box-shadow: 0 0 48px rgba(45, 212, 191, 0.8);
+.subtitle-user {
+  font-size: 15px;
+  color: #93c5fd;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.1);
+  margin-bottom: 4px;
 }
 
-.pet-avatar.speaking {
-  transform: scale(1.08);
-  box-shadow: 0 0 56px rgba(244, 114, 182, 0.95);
+.subtitle-linxi {
+  font-size: 15px;
+  color: #f0abfc;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(192, 132, 252, 0.1);
+  line-height: 1.6;
+  max-height: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
-.pet-avatar.error {
-  background: linear-gradient(135deg, #f87171, #fb923c);
-  box-shadow: 0 0 32px rgba(248, 113, 113, 0.8);
+/* ── 主操作栏 ── */
+.action-bar {
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 12px 0 8px;
 }
 
-.status-text {
-  font-size: 18px;
-  margin-bottom: 24px;
-}
-
-.section-title {
-  font-weight: bold;
-  margin-bottom: 12px;
-  text-align: left;
-}
-
-.model-box,
-.speaker-box,
-.chat-box,
-.voice-box,
-.volume-box {
-  margin-bottom: 24px;
-}
-
-.model-cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-}
-
-.model-card {
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 16px;
-  padding: 14px;
+.action-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 22px;
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
-  text-align: left;
   color: white;
-  background: rgba(255, 255, 255, 0.08);
+  transition: all 0.2s ease;
+  letter-spacing: 0.5px;
 }
 
-.model-card.active {
-  border-color: #38bdf8;
-  background: rgba(56, 189, 248, 0.18);
-  box-shadow: 0 0 20px rgba(56, 189, 248, 0.35);
+.action-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
-.model-name {
-  font-size: 20px;
-  font-weight: bold;
-  margin-bottom: 6px;
+.btn-connect  { background: rgba(124, 58, 237, 0.6); border: 1px solid rgba(167,139,250,0.3); }
+.btn-mic      { background: rgba(6, 182, 212, 0.6);   border: 1px solid rgba(34,211,238,0.3); }
+.btn-mic.active { background: rgba(239, 68, 68, 0.7); border-color: rgba(252,165,165,0.4); animation: pulse-mic 1.2s infinite; }
+.btn-ask      { background: rgba(234, 88, 12, 0.7);   border: 1px solid rgba(253,186,116,0.3); }
+.btn-send     { background: rgba(37, 99, 235, 0.7);   border: 1px solid rgba(147,197,253,0.3); }
+.btn-speak    { background: rgba(219, 39, 119, 0.7);  border: 1px solid rgba(249,168,212,0.3); }
+.btn-settings { background: rgba(71, 85, 105, 0.6);   border: 1px solid rgba(148,163,184,0.2); }
+
+.action-btn:not(:disabled):hover { filter: brightness(1.25); transform: translateY(-1px); }
+
+@keyframes pulse-mic {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  50%       { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
 }
 
-.model-id {
-  font-size: 11px;
-  opacity: 0.7;
-  word-break: break-all;
-  margin-bottom: 8px;
+.btn-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
 }
+.dot-on  { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+.dot-off { background: #94a3b8; }
 
-.model-desc {
-  font-size: 13px;
-  opacity: 0.9;
+/* ── 输入区 ── */
+.input-area {
+  z-index: 1;
+  width: min(580px, 90vw);
+  margin-top: 4px;
 }
 
 .chat-input {
   width: 100%;
-  min-height: 80px;
-  border: none;
+  padding: 12px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.07);
+  color: #e8f0ff;
+  font-size: 14px;
+  font-family: inherit;
+  resize: none;
   outline: none;
-  resize: vertical;
-  border-radius: 14px;
-  padding: 14px;
-  box-sizing: border-box;
-  color: white;
-  font-size: 15px;
-  background: rgba(255, 255, 255, 0.12);
+  transition: border-color 0.2s;
+  line-height: 1.5;
 }
+.chat-input::placeholder { color: rgba(255,255,255,0.3); }
+.chat-input:focus { border-color: rgba(125, 211, 252, 0.4); }
 
-.chat-input::placeholder {
-  color: rgba(255, 255, 255, 0.55);
-}
-
-.toggle-line,
-.tts-mode-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 12px;
-  font-size: 14px;
-  opacity: 0.9;
-}
-
-.tts-mode-row {
-  flex-wrap: wrap;
-}
-
-.chat-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.send-button {
-  background: #2563eb;
-}
-
-.speak-button {
-  background: #db2777;
-}
-
-.reply-box,
-.asr-box,
-.tts-box,
-.stream-asr-box {
-  margin-top: 14px;
-  padding: 14px;
-  border-radius: 14px;
-  text-align: left;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.stream-asr-box {
-  border: 1px solid rgba(45, 212, 191, 0.35);
-}
-
-.tts-box {
-  border: 1px solid rgba(244, 114, 182, 0.35);
-}
-
-.reply-title {
-  font-weight: bold;
-  margin-bottom: 8px;
-}
-
-.stream-status {
-  font-size: 13px;
-  opacity: 0.75;
-  margin-bottom: 8px;
-}
-
-.reply-text {
-  line-height: 1.7;
-  white-space: pre-wrap;
-}
-
-.voice-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  justify-content: center;
-}
-
-.volume-label {
-  font-size: 14px;
-  opacity: 0.8;
-  margin-bottom: 8px;
-}
-
-.volume-bar {
-  width: 100%;
-  height: 16px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
-  overflow: hidden;
-}
-
-.volume-inner {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #38bdf8, #a78bfa);
-  transition: width 0.08s linear;
-}
-
-.volume-number {
+/* ── 回复区 ── */
+.reply-area {
+  z-index: 1;
+  width: min(580px, 90vw);
   margin-top: 8px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
   font-size: 14px;
-  opacity: 0.8;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
 }
 
-button {
-  border: none;
+.tts-progress {
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.5;
+  text-align: right;
+}
+
+/* ── 设置面板 ── */
+.settings-panel {
+  z-index: 2;
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(580px, 100vw);
+  background: rgba(10, 18, 36, 0.95);
+  backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(255,255,255,0.1);
+  border-radius: 24px 24px 0 0;
+  padding: 20px 24px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.panel-section { display: flex; flex-direction: column; gap: 8px; }
+.panel-label { font-size: 12px; font-weight: 600; opacity: 0.5; letter-spacing: 1px; text-transform: uppercase; }
+
+.chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.chip {
+  border: 1px solid rgba(255,255,255,0.15);
   border-radius: 999px;
-  padding: 10px 18px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.7);
+  background: rgba(255,255,255,0.06);
   cursor: pointer;
-  font-size: 15px;
-  color: white;
-  background: #2563eb;
+  transition: all 0.2s;
 }
-
-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.chip.active {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.18);
+  color: #7dd3fc;
 }
-
-.voice-buttons button:nth-child(1) {
-  background: #7c3aed;
-}
-
-.voice-buttons button:nth-child(3) {
-  background: #475569;
-}
-
-.voice-buttons button:nth-child(4) {
-  background: #059669;
-}
-
-.voice-ask-button {
-  background: #ea580c;
-}
-
-.backend-box {
-  margin-top: 20px;
-  padding: 12px;
-  border-radius: 12px;
-  font-size: 14px;
-  line-height: 1.8;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.backend-title {
-  font-weight: bold;
-  margin-bottom: 4px;
-}
-
-.speaker-card.active {
+.chip-speaker.active {
   border-color: #a78bfa;
   background: rgba(167, 139, 250, 0.18);
-  box-shadow: 0 0 20px rgba(167, 139, 250, 0.35);
+  color: #c4b5fd;
 }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.panel-debug {
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding-top: 12px;
+  gap: 4px;
+}
+.debug-line { font-size: 12px; opacity: 0.45; }
+
+/* 面板动画 */
+.panel-slide-enter-active,
+.panel-slide-leave-active { transition: transform 0.3s ease; }
+.panel-slide-enter-from,
+.panel-slide-leave-to { transform: translateX(-50%) translateY(100%); }
 </style>
