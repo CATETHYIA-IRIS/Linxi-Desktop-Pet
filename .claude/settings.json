@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sort -t/ -k1 -r)",
+      "Skill(update-config)",
+      "Skill(update-config:*)"
+    ]
+  }
+}
